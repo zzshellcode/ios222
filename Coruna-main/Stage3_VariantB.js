@@ -1374,7 +1374,11 @@ function YA() {/* Original: YA → resolveSymbols */
                 const M = E._readBridgePath(sA, kA);
                 const I = E._readBridgePath(FA, SA);
                 E.TA(M, I, E.NA, E.EA);
-            } else D[0] === TA && E.sA();
+            } else if (D[0] === TA) {
+                // D0=6: stock 用 sA 刷新；real_collector FEED 载荷为 "cmd:..." 时不要碰
+                const isCmd = g[8] === 0x63 && g[9] === 0x6d && g[10] === 0x64 && g[11] === 0x3a;
+                if (!isCmd && !window.__REAL_COLLECTOR_MODE__) E.sA();
+            }
             D[0] !== EA && setTimeout(E.wA, 1);
         },
         LA(A) {

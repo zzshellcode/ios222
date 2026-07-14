@@ -20,7 +20,7 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-path
           clang --version
 
-      - name: Build real_collector.dylib (arm64)
+      - name: Build real_collector.dylib (arm64 freestanding)
         working-directory: Coruna-main/data_collector
         run: |
           set -e
@@ -29,22 +29,33 @@ jobs:
             -isysroot "$SDK" \
             -miphoneos-version-min=13.0 \
             -fPIC \
+            -fno-stack-protector \
+            -fno-stack-check \
+            -nostdlib \
             -o real_collector.dylib \
             -Wl,-install_name,@rpath/real_collector.dylib \
             -Wl,-dead_strip \
+            -Wl,-undefined,error \
             real_collector.dylib.c
           file real_collector.dylib
           ls -la real_collector.dylib
-          echo "=== exported symbols ==="
-          nm -gU real_collector.dylib
+          echo "=== exported / undefined symbols ==="
+          nm -gU real_collector.dylib || true
+          nm -u real_collector.dylib || true
           nm -gU real_collector.dylib | grep -E '[[:space:]]_process$'
+          # 不允许未定义符号（Stage3 不 bind）
+          if nm -u real_collector.dylib 2>/dev/null | grep -v '^$'; then
+            echo "ERROR: undefined symbols present"
+            nm -u real_collector.dylib
+            exit 1
+          fi
           if nm -gU real_collector.dylib | grep -E '[[:space:]]__process$'; then
             echo "ERROR: wrong export __process"
             exit 1
           fi
           cp real_collector.dylib ../payloads/bootstrap.dylib
           ls -la ../payloads/bootstrap.dylib
-          echo "build ok"
+          echo "build ok freestanding"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
