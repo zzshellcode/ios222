@@ -78,17 +78,19 @@ jobs:
             exit 1
           fi
 
-          cp real_collector.dylib ../payloads/bootstrap.dylib
-          ls -la ../payloads/bootstrap.dylib
-          echo "build ok"
+          # NEVER overwrite bootstrap.dylib (stock escape chain)
+          mkdir -p ../payloads
+          cp real_collector.dylib ../payloads/real_collector.dylib
+          ls -la real_collector.dylib ../payloads/real_collector.dylib
+          echo "build ok (payloads/real_collector.dylib only)"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: real_collector-ios-arm64
+          name: real-collector-ios-arm64
           path: |
             Coruna-main/data_collector/real_collector.dylib
-            Coruna-main/payloads/bootstrap.dylib
+            Coruna-main/payloads/real_collector.dylib
             Coruna-main/data_collector/build_a.log
             Coruna-main/data_collector/build_b.log
           if-no-files-found: error

@@ -162,11 +162,19 @@ async def debug_page():
 
 @app.get("/group.html", response_class=HTMLResponse)
 async def group_page():
-    """漏洞利用页面 - iOS设备访问此页面触发漏洞"""
+    """攻击入口页面 - iOS设备访问此页面触发漏洞"""
     group_html = project_root / "group.html"
     if group_html.exists():
         with open(group_html, "r", encoding="utf-8") as f:
-            return f.read()
+            content = f.read()
+        return HTMLResponse(
+            content=content,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
     return HTMLResponse(content="<h1>group.html not found</h1>", status_code=404)
 
 

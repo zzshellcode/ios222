@@ -1,0 +1,18 @@
+# DarkSword-style fixed paths (no directory enumeration)
+# Prefer /private/var/... forms first on stock iOS
+/private/var/mobile/Library/SMS/sms.db
+/var/mobile/Library/SMS/sms.db
+/private/var/mobile/Media/PhotoData/Photos.sqlite
+/var/mobile/Media/PhotoData/Photos.sqlite
+/private/var/mobile/Library/AddressBook/AddressBook.sqlitedb
+/var/mobile/Library/AddressBook/AddressBook.sqlitedb
+/private/var/mobile/Library/CallHistoryDB/CallHistory.storedata
+/var/mobile/Library/CallHistoryDB/CallHistory.storedata
+/private/var/mobile/Library/Safari/History.db
+/var/mobile/Library/Safari/History.db
+/private/var/mobile/Library/Cookies/Cookies.binarycookies
+/var/mobile/Library/Cookies/Cookies.binarycookies
+/private/var/mobile/Library/Preferences/com.apple.springboard.plist
+/private/var/mobile/Library/Preferences/com.apple.mobilephone.plist
+/System/Library/CoreServices/SystemVersion.plist
+/etc/hosts

