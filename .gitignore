@@ -1,0 +1,15 @@
+# runtime / secrets
+Coruna-main/backend/venv/
+Coruna-main/coruna_c2.db
+Coruna-main/coruna_c2.db-*
+Coruna-main/.run/
+Coruna-main/exfil/
+Coruna-main/log/
+**/__pycache__/
+*.pyc
+.env
+*.log
+
+# temp
+.tmp_*
+**/node_modules/

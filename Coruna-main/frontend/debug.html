@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Coruna 调试面板</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+header { background: #1e293b; padding: 16px 24px; border-bottom: 1px solid #334155; display: flex; align-items: center; gap: 16px; }
+header h1 { font-size: 20px; color: #38bdf8; }
+header .subtitle { color: #94a3b8; font-size: 13px; }
+.container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+.card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; }
+.card h2 { font-size: 14px; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+.card h3 { font-size: 13px; color: #64748b; margin-bottom: 8px; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; transition: all .15s; font-weight: 500; }
+.btn:active { transform: scale(.97); }
+.btn-primary { background: #2563eb; color: #fff; }
+.btn-primary:hover { background: #1d4ed8; }
+.btn-success { background: #059669; color: #fff; }
+.btn-success:hover { background: #047857; }
+.btn-danger { background: #dc2626; color: #fff; }
+.btn-danger:hover { background: #b91c1c; }
+.btn-warning { background: #d97706; color: #fff; }
+.btn-warning:hover { background: #b45309; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-group { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; margin-bottom: 12px; }
+.cat-btn { padding: 8px 12px; background: #334155; border: 1px solid #475569; border-radius: 6px; color: #e2e8f0; font-size: 12px; cursor: pointer; text-align: center; transition: all .15s; }
+.cat-btn:hover { background: #475569; border-color: #38bdf8; }
+.cat-btn.active { background: #1e40af; border-color: #38bdf8; }
+#logArea { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 12px; font-family: "SF Mono", "Fira Code", monospace; font-size: 12px; height: 300px; overflow-y: auto; line-height: 1.6; }
+#logArea .log-info { color: #38bdf8; }
+#logArea .log-ok { color: #34d399; }
+#logArea .log-err { color: #f87171; }
+#logArea .log-warn { color: #fbbf24; }
+#logArea .log-muted { color: #64748b; }
+#logArea .log-highlight { color: #c084fc; }
+.stat-box { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 8px; margin-top: 8px; }
+.stat-item { text-align: center; padding: 10px 6px; background: #0f172a; border-radius: 6px; }
+.stat-item .num { font-size: 22px; font-weight: 700; color: #38bdf8; }
+.stat-item .label { font-size: 11px; color: #64748b; margin-top: 2px; }
+input, select { background: #0f172a; border: 1px solid #475569; border-radius: 6px; padding: 8px 12px; color: #e2e8f0; font-size: 13px; width: 100%; }
+input:focus, select:focus { outline: none; border-color: #38bdf8; }
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.row label { font-size: 13px; color: #94a3b8; white-space: nowrap; }
+.row input { width: 200px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #1e293b; }
+th { color: #64748b; font-weight: 600; font-size: 11px; text-transform: uppercase; }
+td { color: #e2e8f0; }
+#resultArea { margin-top: 8px; max-height: 200px; overflow: auto; }
+#resultArea pre { background: #0f172a; padding: 8px; border-radius: 4px; font-size: 11px; color: #94a3b8; white-space: pre-wrap; word-break: break-all; }
+@media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔧 Coruna 调试面板</h1>
+  <span class="subtitle">测试数据注入 · 管道诊断 · 日志查看</span>
+</header>
+<div class="container">
+
+<div class="grid">
+  <div class="card">
+    <h2>📱 设备管理</h2>
+    <div class="row">
+      <label>设备 UUID:</label>
+      <input type="text" id="deviceUuid" value="debug" placeholder="留空自动生成">
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="registerDevice()">注册设备</button>
+      <button class="btn btn-warning" onclick="deleteDevice()">删除设备</button>
+      <button class="btn btn-danger" onclick="clearAll()">清空全部</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>📊 数据库统计</h2>
+    <div id="statsContainer">
+      <button class="btn btn-sm btn-primary" onclick="refreshStats()">刷新</button>
+      <div class="stat-box" id="statsBox"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:16px;">
+  <h2>💉 注入测试数据</h2>
+  <div class="cat-grid" id="catGrid"></div>
+  <div class="row">
+    <label>数量:</label>
+    <input type="number" id="injectCount" value="3" min="1" max="100" style="width:80px;">
+    <button class="btn btn-success" onclick="injectAll()">注入全部类别</button>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>📝 日志</h2>
+    <div id="logArea">[DEBUG] 调试面板已加载，点击按钮注入数据...</div>
+  </div>
+
+  <div class="card">
+    <h2>🔍 结果 / 原始响应</h2>
+    <div id="resultArea"><pre style="color:#64748b;">操作结果将显示在这里...</pre></div>
+  </div>
+</div>
+
+</div>
+
+<script>
+const BASE = window.location.origin;
+let DEVICE_UUID = 'debug';
+
+function log(msg, type = 'info') {
+  const el = document.getElementById('logArea');
+  const t = new Date().toLocaleTimeString();
+  el.innerHTML += `<div class="log-${type}">[${t}] ${msg}</div>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function result(data) {
+  const el = document.getElementById('resultArea');
+  el.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+}
+
+function api(path, opts = {}) {
+  const url = BASE + '/api/debug/' + path;
+  const params = new URLSearchParams();
+  if (opts.params) {
+    for (const [k, v] of Object.entries(opts.params)) {
+      if (v !== undefined && v !== null) params.set(k, v);
+    }
+  }
+  const fullUrl = params.toString() ? url + '?' + params.toString() : url;
+  return fetch(fullUrl, { method: opts.method || 'POST' })
+    .then(r => r.json())
+    .catch(e => ({ error: e.message }));
+}
+
+function registerDevice() {
+  const uuid = document.getElementById('deviceUuid').value.trim() || undefined;
+  DEVICE_UUID = uuid || 'debug';
+  api('register-device', { params: { device_uuid: uuid } }).then(r => {
+    result(r);
+    if (r.ok) {
+      DEVICE_UUID = r.device_uuid;
+      document.getElementById('deviceUuid').value = DEVICE_UUID;
+      log('设备注册成功: ' + DEVICE_UUID, 'ok');
+      refreshStats();
+    } else {
+      log('注册失败: ' + (r.detail || r.error), 'err');
+    }
+  });
+}
+
+function injectCategory(cat) {
+  const count = parseInt(document.getElementById('injectCount').value) || 3;
+  api('inject/' + cat, { params: { device_uuid: DEVICE_UUID, count } }).then(r => {
+    result(r);
+    if (r.ok) {
+      log(`注入 ${cat}: ${r.count} 条`, 'ok');
+      refreshStats();
+    } else {
+      log(`注入 ${cat} 失败: ${r.detail || r.error}`, 'err');
+    }
+  });
+}
+
+function injectAll() {
+  log('开始注入所有分类...', 'warn');
+  api('inject-all', { params: { device_uuid: DEVICE_UUID } }).then(r => {
+    result(r);
+    if (r.ok) {
+      for (const [cat, res] of Object.entries(r.results)) {
+        log(`${cat}: ${res.ok ? '✅ '+res.count+'条' : '❌ '+res.error}`, res.ok ? 'ok' : 'err');
+      }
+      refreshStats();
+    } else {
+      log('批量注入失败', 'err');
+    }
+  });
+}
+
+function deleteDevice() {
+  if (!confirm(`确定删除设备 ${DEVICE_UUID} 及其所有数据？`)) return;
+  api('clean', { params: { device_uuid: DEVICE_UUID } }).then(r => {
+    result(r);
+    if (r.ok) {
+      log('设备数据已清除', 'warn');
+      refreshStats();
+    }
+  });
+}
+
+function clearAll() {
+  if (!confirm('确定清空数据库全部数据？此操作不可撤销！')) return;
+  api('clean').then(r => {
+    result(r);
+    if (r.ok) {
+      log('全部数据已清除', 'warn');
+      refreshStats();
+    }
+  });
+}
+
+function refreshStats() {
+  api('stats', { method: 'GET' }).then(r => {
+    if (r.counts) {
+      const box = document.getElementById('statsBox');
+      box.innerHTML = '';
+      const items = [
+        ['📱', 'devices', '设备'],
+        ['👤', 'contacts', '联系人'],
+        ['💬', 'sms', '短信'],
+        ['📞', 'calls', '通话'],
+        ['🔑', 'keychains', '钥匙串'],
+        ['📋', 'clipboards', '剪贴板'],
+        ['🖼', 'photos', '照片'],
+        ['📦', 'apps', '应用'],
+        ['⚙', 'processes', '进程'],
+        ['📶', 'wifi', 'WiFi'],
+        ['🌐', 'browser_history', '浏览器'],
+        ['📅', 'calendar', '日历'],
+        ['📝', 'notes', '备忘录'],
+        ['❤', 'health', '健康'],
+      ];
+      for (const [icon, key, label] of items) {
+        const val = r.counts[key] || 0;
+        box.innerHTML += `<div class="stat-item"><div class="num">${val}</div><div class="label">${icon} ${label}</div></div>`;
+      }
+    }
+    result(r);
+  });
+}
+
+// 初始化分类按钮
+(function() {
+  const cats = [
+    ['contacts', '👤 联系人'],
+    ['sms', '💬 短信'],
+    ['calls', '📞 通话记录'],
+    ['keychain', '🔑 钥匙串'],
+    ['clipboard', '📋 剪贴板'],
+    ['photos', '🖼 照片'],
+    ['apps', '📦 应用列表'],
+    ['processes', '⚙ 进程'],
+    ['wifi', '📶 WiFi'],
+    ['browser_history', '🌐 浏览器历史'],
+    ['calendar', '📅 日历'],
+    ['notes', '📝 备忘录'],
+    ['health', '❤ 健康数据'],
+  ];
+  const grid = document.getElementById('catGrid');
+  for (const [key, label] of cats) {
+    const btn = document.createElement('button');
+    btn.className = 'cat-btn';
+    btn.textContent = label;
+    btn.onclick = () => injectCategory(key);
+    grid.appendChild(btn);
+  }
+
+  // 自动注册设备并刷新统计
+  registerDevice();
+})();
+</script>
+</body>
+</html>
