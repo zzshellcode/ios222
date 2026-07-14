@@ -25,32 +25,34 @@ jobs:
         run: |
           set -e
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-          clang -arch arm64 -shared -Os \
+          echo "SDK=$SDK"
+          # Apple 用 -dynamiclib；-nostdlib 避免拉 libc； freestanding 无外部依赖
+          clang -arch arm64 -dynamiclib -Os \
             -isysroot "$SDK" \
             -miphoneos-version-min=13.0 \
             -fPIC \
+            -ffreestanding \
+            -fno-builtin \
             -fno-stack-protector \
             -fno-stack-check \
+            -fomit-frame-pointer \
             -nostdlib \
             -o real_collector.dylib \
             -Wl,-install_name,@rpath/real_collector.dylib \
             -Wl,-dead_strip \
-            -Wl,-undefined,error \
+            -Wl,-exported_symbol,_process \
             real_collector.dylib.c
           file real_collector.dylib
           ls -la real_collector.dylib
-          echo "=== exported / undefined symbols ==="
+          echo "=== nm -gU ==="
           nm -gU real_collector.dylib || true
+          echo "=== nm -u (should be empty) ==="
           nm -u real_collector.dylib || true
           nm -gU real_collector.dylib | grep -E '[[:space:]]_process$'
-          # 不允许未定义符号（Stage3 不 bind）
-          if nm -u real_collector.dylib 2>/dev/null | grep -v '^$'; then
-            echo "ERROR: undefined symbols present"
-            nm -u real_collector.dylib
-            exit 1
-          fi
-          if nm -gU real_collector.dylib | grep -E '[[:space:]]__process$'; then
-            echo "ERROR: wrong export __process"
+          UNDEF="$(nm -u real_collector.dylib 2>/dev/null | tr -d '\r' | sed '/^$/d' || true)"
+          if [ -n "$UNDEF" ]; then
+            echo "ERROR: undefined symbols:"
+            echo "$UNDEF"
             exit 1
           fi
           cp real_collector.dylib ../payloads/bootstrap.dylib
