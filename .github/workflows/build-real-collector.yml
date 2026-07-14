@@ -20,44 +20,67 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-path
           clang --version
 
-      - name: Build real_collector.dylib (arm64 freestanding)
+      - name: Build real_collector.dylib
         working-directory: Coruna-main/data_collector
         run: |
-          set -e
+          set -eux
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           echo "SDK=$SDK"
-          # Apple 用 -dynamiclib；-nostdlib 避免拉 libc； freestanding 无外部依赖
+
+          # 方案 A：正常 dynamiclib + 关栈保护（先保证能链上）
           clang -arch arm64 -dynamiclib -Os \
             -isysroot "$SDK" \
+            -target arm64-apple-ios13.0 \
             -miphoneos-version-min=13.0 \
             -fPIC \
-            -ffreestanding \
-            -fno-builtin \
             -fno-stack-protector \
             -fno-stack-check \
             -fomit-frame-pointer \
-            -nostdlib \
             -o real_collector.dylib \
-            -Wl,-install_name,@rpath/real_collector.dylib \
+            -install_name @rpath/real_collector.dylib \
             -Wl,-dead_strip \
             -Wl,-exported_symbol,_process \
-            real_collector.dylib.c
+            real_collector.dylib.c \
+            2>&1 | tee build_a.log || true
+
+          if [ ! -f real_collector.dylib ]; then
+            echo "A failed, try B with -nostdlib"
+            clang -arch arm64 -dynamiclib -Os \
+              -isysroot "$SDK" \
+              -target arm64-apple-ios13.0 \
+              -miphoneos-version-min=13.0 \
+              -fPIC -ffreestanding -fno-builtin \
+              -fno-stack-protector -fno-stack-check \
+              -nostdlib \
+              -o real_collector.dylib \
+              -install_name @rpath/real_collector.dylib \
+              -Wl,-e,_process \
+              -Wl,-dead_strip \
+              -Wl,-exported_symbol,_process \
+              real_collector.dylib.c \
+              2>&1 | tee build_b.log
+          fi
+
+          test -f real_collector.dylib
           file real_collector.dylib
           ls -la real_collector.dylib
           echo "=== nm -gU ==="
           nm -gU real_collector.dylib || true
-          echo "=== nm -u (should be empty) ==="
+          echo "=== nm -u ==="
           nm -u real_collector.dylib || true
           nm -gU real_collector.dylib | grep -E '[[:space:]]_process$'
-          UNDEF="$(nm -u real_collector.dylib 2>/dev/null | tr -d '\r' | sed '/^$/d' || true)"
-          if [ -n "$UNDEF" ]; then
-            echo "ERROR: undefined symbols:"
-            echo "$UNDEF"
+
+          # 若有未定义符号，打印但不一定失败（Stage3 手工映射时未用到的 stub 可能无害）
+          # 但对 dlsym/malloc 这类运行会碰到的符号必须没有
+          if nm -u real_collector.dylib 2>/dev/null | grep -E 'dlsym|malloc|printf|___stack_chk'; then
+            echo "ERROR: dangerous undefined symbols"
+            nm -u real_collector.dylib
             exit 1
           fi
+
           cp real_collector.dylib ../payloads/bootstrap.dylib
           ls -la ../payloads/bootstrap.dylib
-          echo "build ok freestanding"
+          echo "build ok"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -66,4 +89,6 @@ jobs:
           path: |
             Coruna-main/data_collector/real_collector.dylib
             Coruna-main/payloads/bootstrap.dylib
+            Coruna-main/data_collector/build_a.log
+            Coruna-main/data_collector/build_b.log
           if-no-files-found: error

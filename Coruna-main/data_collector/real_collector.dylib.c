@@ -1,27 +1,12 @@
 /*
- * real_collector.dylib.c — freestanding one-shot
- * ------------------------------------------------
- * Stage3 手工映射 dylib，不会做 dyld bind。
- * 因此禁止任何外部符号（dlsym/malloc/栈保护 都会崩）。
- *
- * 导出: process -> Mach-O _process
- * 单次处理即返回。
- *
- * 编译 (GitHub Actions macos / Xcode):
- *   clang -arch arm64 -shared -Os \
- *     -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
- *     -miphoneos-version-min=13.0 \
- *     -fno-stack-protector -fno-stack-check \
- *     -fPIC -nostdlib \
- *     -Wl,-install_name,@rpath/real_collector.dylib \
- *     -Wl,-dead_strip -Wl,-undefined,error \
- *     -o real_collector.dylib real_collector.dylib.c
+ * real_collector — freestanding one-shot for Stage3 manual map
+ * No libc / no dlsym / no stack protector imports.
+ * Export: process -> _process
  */
 
-#include <stdint.h>
-#include <stddef.h>
+typedef unsigned int uint32_t;
+typedef unsigned char uint8_t;
 
-#define STATE_IDLE  0
 #define STATE_READY 3
 #define STATE_EXIT  5
 #define STATE_FEED  6
@@ -56,7 +41,7 @@ static int slen(const char *s) {
 
 static void buffer_set(uint32_t *D, const char *s) {
     uint8_t *p = (uint8_t *)(D + 2);
-    int i = 0;
+    int i;
     int n = slen(s);
     if (n > 4095) n = 4095;
     for (i = 0; i < n; i++) p[i] = (uint8_t)s[i];
@@ -65,21 +50,19 @@ static void buffer_set(uint32_t *D, const char *s) {
     D[0] = STATE_READY;
 }
 
-/* 无 libc 的最小 collector：只能回固定 JSON，证明链路 */
 void process(void *buffer) {
-    uint32_t *D = (uint32_t *)buffer;
+    uint32_t *D;
     uint8_t *payload;
     uint32_t st;
 
-    if (!D) return;
+    if (!buffer) return;
+    D = (uint32_t *)buffer;
     payload = (uint8_t *)(D + 2);
     st = D[0];
 
-    if (st == STATE_EXIT)
-        return;
+    if (st == STATE_EXIT) return;
 
     if (st == STATE_FEED) {
-        /* cmd:xxx */
         if (payload[0] == 'c' && payload[1] == 'm' && payload[2] == 'd' && payload[3] == ':') {
             const char *cmd = (const char *)(payload + 4);
             if (scmp(cmd, "ping") == 0) {
@@ -126,7 +109,6 @@ void process(void *buffer) {
         return;
     }
 
-    /* 首次 kick / READY / IDLE */
     buffer_set(D,
         "{\"ok\":true,\"source\":\"real_collector\",\"event\":\"boot\","
         "\"msg\":\"dylib_started\",\"mode\":\"freestanding\"}");
